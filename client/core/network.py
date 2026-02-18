@@ -283,6 +283,9 @@ class NetworkClient:
 
     async def _heartbeat_loop(self):
         """心跳循环"""
+        heartbeat_failures = 0
+        max_heartbeat_failures = 3
+        
         while self._running:
             try:
                 await asyncio.sleep(self._config.heartbeat_interval)
@@ -299,17 +302,30 @@ class NetworkClient:
 
                 self._writer.write(heartbeat_packet.pack())
                 await self._writer.drain()
+                
+                # 心跳成功，重置失败计数
+                heartbeat_failures = 0
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.debug(f"Heartbeat error: {e}")
-                if self._config.auto_reconnect:
-                    await self._reconnect()
-                break
+                heartbeat_failures += 1
+                
+                if heartbeat_failures >= max_heartbeat_failures:
+                    logger.warning(f"Heartbeat failed {max_heartbeat_failures} times, reconnecting")
+                    if self._config.auto_reconnect:
+                        await self._reconnect()
+                    break
+                else:
+                    logger.debug(f"Heartbeat failed {heartbeat_failures}/{max_heartbeat_failures}, retrying")
+                    # 继续循环，不立即重连
 
     async def _receive_loop(self):
         """接收循环"""
+        receive_failures = 0
+        max_receive_failures = 3
+        
         while self._running:
             try:
                 data = await self._reader.read(TCP_BUFFER_SIZE)
@@ -322,14 +338,24 @@ class NetworkClient:
                 packet = Packet.unpack(data)
                 if packet:
                     await self._handle_packet(packet)
+                
+                # 接收成功，重置失败计数
+                receive_failures = 0
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.debug(f"Receive error: {e}")
-                if self._config.auto_reconnect and self._running:
-                    await self._reconnect()
-                break
+                receive_failures += 1
+                
+                if receive_failures >= max_receive_failures:
+                    logger.warning(f"Receive failed {max_receive_failures} times, reconnecting")
+                    if self._config.auto_reconnect and self._running:
+                        await self._reconnect()
+                    break
+                else:
+                    logger.debug(f"Receive failed {receive_failures}/{max_receive_failures}, continuing")
+                    # 继续循环，不立即重连
 
     async def _handle_packet(self, packet: Packet):
         """处理数据包"""

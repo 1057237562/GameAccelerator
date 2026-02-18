@@ -223,11 +223,18 @@ class GameAcceleratorClient:
             },
         }
         self._main_window.settings_panel.load_settings(settings)
+        
+        # 加载用户名和密码到登录表单
+        self._main_window.connection_panel._username_edit.setText(self._config.username)
+        self._main_window.connection_panel._password_edit.setText(self._config.password)
 
     def _on_connect(self, username: str, password: str, region: str, node_id: int):
         """连接按钮点击"""
         self._config.username = username
         self._config.password = password
+        
+        # 保存用户名和密码到配置文件
+        self._config_manager.save(self._config)
 
         self._main_window.connection_panel.set_connecting()
 

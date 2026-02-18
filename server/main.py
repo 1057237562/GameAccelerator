@@ -94,21 +94,21 @@ class GameAcceleratorServer(ProxyServer):
             {
                 "name": "华东节点-1",
                 "region": "east_china",
-                "host": "127.0.0.1",
+                "host": "0.0.0.0",
                 "port": 8389,
                 "max_connections": 500,
             },
             {
                 "name": "华南节点-1",
                 "region": "south_china",
-                "host": "127.0.0.1",
+                "host": "0.0.0.0",
                 "port": 8390,
                 "max_connections": 500,
             },
             {
                 "name": "华北节点-1",
                 "region": "north_china",
-                "host": "127.0.0.1",
+                "host": "0.0.0.0",
                 "port": 8391,
                 "max_connections": 500,
             },
@@ -201,7 +201,7 @@ class GameAcceleratorServer(ProxyServer):
                 print(f"Waiting for data from {conn.remote_addr}")
                 packet_data = await asyncio.wait_for(
                     conn.tcp_reader.read(8192),
-                    timeout=30
+                    timeout=90
                 )
                 if not packet_data:
                     print(f"Connection closed by client: {conn.remote_addr}")
@@ -366,9 +366,6 @@ class GameAcceleratorServer(ProxyServer):
                 return
         else:
             payload = packet.payload
-
-        target_host = "127.0.0.1"
-        target_port = 80
 
         self._monitoring.metrics.update_server_metrics(
             bytes_in=len(payload),
