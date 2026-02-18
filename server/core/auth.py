@@ -115,9 +115,9 @@ class PasswordManager:
 
     def __init__(self):
         self._pwd_context = CryptContext(
-            schemes=["bcrypt"],
+            schemes=["pbkdf2_sha256"],
             deprecated="auto",
-            bcrypt__rounds=12
+            pbkdf2_sha256__rounds=100000
         )
 
     def hash_password(self, password: str) -> str:
@@ -520,6 +520,9 @@ class AuthManager:
             return None
         if await self._db.get_user_by_email(email):
             return None
+
+        # 确保密码长度不超过 72 字节
+        password = password[:72]
 
         user = User(
             user_id=secrets.token_urlsafe(16),
