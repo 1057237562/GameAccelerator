@@ -286,7 +286,7 @@ class Logger:
         console_handler.setFormatter(console_formatter)
         root_logger.addHandler(console_handler)
 
-        file_handler = logging.handlers.RotatingFileHandler(
+        file_handler = handlers.RotatingFileHandler(
             os.path.join(self._log_dir, "server.log"),
             maxBytes=self._max_bytes,
             backupCount=self._backup_count,
@@ -297,7 +297,7 @@ class Logger:
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
 
-        error_handler = logging.handlers.RotatingFileHandler(
+        error_handler = handlers.RotatingFileHandler(
             os.path.join(self._log_dir, "error.log"),
             maxBytes=self._max_bytes,
             backupCount=self._backup_count,
