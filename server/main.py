@@ -7,6 +7,7 @@ import asyncio
 import signal
 import os
 import sys
+import time
 import logging
 from typing import Optional
 from datetime import datetime
@@ -25,6 +26,11 @@ from shared.protocol import (
 from shared.crypto import SecureChannel, HandshakeCrypto, CryptoManager
 
 
+# 设置日志级别为 DEBUG
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -192,19 +198,42 @@ class GameAcceleratorServer(ProxyServer):
         """处理TCP连接"""
         try:
             while True:
+                print(f"Waiting for data from {conn.remote_addr}")
                 packet_data = await asyncio.wait_for(
                     conn.tcp_reader.read(8192),
                     timeout=30
                 )
                 if not packet_data:
+                    print(f"Connection closed by client: {conn.remote_addr}")
                     return
 
+                print(f"Received data from {conn.remote_addr}: {packet_data.hex()}, length: {len(packet_data)}")
+                
+                # 手动检查数据包格式
+                if len(packet_data) < 20:
+                    print(f"Data too short: {len(packet_data)} bytes")
+                    return
+                
+                # 尝试手动解析数据包
+                try:
+                    import struct
+                    magic, version, msg_type, flags, payload_len, sequence, timestamp = struct.unpack(
+                        "!HBBIIII", packet_data[:20]
+                    )
+                    print(f"Manual unpack: magic={hex(magic)}, version={version}, msg_type={msg_type}")
+                except Exception as e:
+                    print(f"Manual unpack error: {e}")
+                    return
+                
                 packet = Packet.unpack(packet_data)
                 if packet is None:
-                    logger.warning(f"Invalid packet from {conn.remote_addr}")
+                    print(f"Invalid packet from {conn.remote_addr}")
                     return
 
+                print(f"Received packet: msg_type={packet.header.msg_type}, payload_len={packet.header.payload_len}")
+                
                 if packet.header.msg_type == MessageType.HANDSHAKE:
+                    print(f"Handling handshake from {conn.remote_addr}")
                     await self._handle_handshake(conn, packet)
                 elif packet.header.msg_type == MessageType.AUTH_REQUEST:
                     await self._handle_auth(conn, packet)

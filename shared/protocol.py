@@ -48,7 +48,7 @@ class PacketHeader:
     sequence: int = 0
     timestamp: int = 0
 
-    HEADER_SIZE = 16
+    HEADER_SIZE = 20
     HEADER_FORMAT = "!HBBIIII"
 
     def pack(self) -> bytes:
@@ -65,13 +65,16 @@ class PacketHeader:
 
     @classmethod
     def unpack(cls, data: bytes) -> Optional["PacketHeader"]:
+        print(f"PacketHeader.unpack called with data length: {len(data)}")
         if len(data) < cls.HEADER_SIZE:
+            print(f"Data length {len(data)} is less than HEADER_SIZE {cls.HEADER_SIZE}")
             return None
         try:
             magic, version, msg_type, flags, payload_len, sequence, timestamp = struct.unpack(
                 cls.HEADER_FORMAT, data[: cls.HEADER_SIZE]
             )
-            if magic != cls(magic).magic:
+            if magic != 0x4E41:
+                print(f"Invalid magic value: {magic}")
                 return None
             return cls(
                 magic=magic,
@@ -82,7 +85,8 @@ class PacketHeader:
                 sequence=sequence,
                 timestamp=timestamp,
             )
-        except (struct.error, ValueError):
+        except (struct.error, ValueError) as e:
+            print(f"Unpack error: {e}, data length: {len(data)}")
             return None
 
 
@@ -125,6 +129,7 @@ class Packet:
 
     @classmethod
     def unpack(cls, data: bytes) -> Optional["Packet"]:
+        print(f"Packet.unpack called with data length: {len(data)}")
         header = PacketHeader.unpack(data)
         if header is None:
             return None

@@ -209,13 +209,16 @@ class NetworkClient:
                 payload=b"",
                 sequence=0
             )
-            self._writer.write(handshake_packet.pack())
+            packet_data = handshake_packet.pack()
+            logger.debug(f"Sending handshake packet: {packet_data.hex()}")
+            self._writer.write(packet_data)
             await self._writer.drain()
 
             response_data = await asyncio.wait_for(
                 self._reader.read(1024),
                 timeout=self._config.timeout
             )
+            logger.debug(f"Received handshake response: {response_data.hex()}")
 
             response = Packet.unpack(response_data)
             if response is None or response.header.msg_type != MessageType.HANDSHAKE_ACK:

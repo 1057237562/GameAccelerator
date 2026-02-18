@@ -452,6 +452,8 @@ class ProxyServer:
         addr = writer.get_extra_info('peername')
         conn_id = f"tcp_{addr[0]}_{addr[1]}_{time.time()}"
 
+        print(f"New TCP connection from {addr}")
+
         conn = ClientConnection(
             conn_id=conn_id,
             user_id="",
@@ -463,19 +465,26 @@ class ProxyServer:
         conn.stats.connect_time = time.time()
         conn.stats.last_activity = time.time()
 
-        await self._connection_manager.add_connection(conn)
+        print(f"Created client connection: {conn_id}")
+        
+        added = await self._connection_manager.add_connection(conn)
+        print(f"Added connection to manager: {added}")
 
         try:
+            print(f"Starting to process TCP connection: {conn_id}")
             await self._process_tcp_connection(conn)
+            print(f"Finished processing TCP connection: {conn_id}")
         except Exception as e:
-            logger.error(f"TCP connection error: {e}")
+            print(f"TCP connection error: {e}")
         finally:
+            print(f"Removing connection: {conn_id}")
             await self._connection_manager.remove_connection(conn_id)
             try:
                 writer.close()
                 await writer.wait_closed()
-            except Exception:
-                pass
+                print(f"Closed connection: {conn_id}")
+            except Exception as e:
+                print(f"Error closing connection: {e}")
 
     async def _process_tcp_connection(self, conn: ClientConnection):
         """处理TCP连接"""
