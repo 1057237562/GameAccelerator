@@ -251,22 +251,37 @@ class SOCKS5Server:
         target_host, target_port = target_addr
 
         use_accelerator = target_port in self._accelerated_ports
+        
+        logger.info(f"[SOCKS5] Relay connection: {target_host}:{target_port}, use_accelerator={use_accelerator}")
+        logger.info(f"[SOCKS5] Accelerated ports: {self._accelerated_ports}")
+        logger.info(f"[SOCKS5] Network client connected: {self._network_client and self._network_client.is_connected}")
 
         try:
             if use_accelerator and self._network_client and self._network_client.is_connected:
+                logger.info(f"[SOCKS5] Using network client for acceleration")
+                
+                # 发送 CONNECT 请求
+                success = await self._network_client.connect_to_target(target_host, target_port)
+                if not success:
+                    logger.error(f"[SOCKS5] Failed to connect to {target_host}:{target_port}")
+                    return
+                
+                logger.info(f"[SOCKS5] Connected to {target_host}:{target_port} via accelerator")
                 target_reader, target_writer = None, None
             elif use_accelerator:
+                logger.info(f"[SOCKS5] Connecting to upstream server {self._upstream_host}:{self._upstream_port}")
                 target_reader, target_writer = await asyncio.open_connection(
                     self._upstream_host,
                     self._upstream_port
                 )
             else:
+                logger.info(f"[SOCKS5] Direct connection to target {target_host}:{target_port}")
                 target_reader, target_writer = await asyncio.open_connection(
                     target_host,
                     target_port
                 )
         except Exception as e:
-            logger.debug(f"Failed to connect to target: {e}")
+            logger.error(f"[SOCKS5] Failed to connect to target: {e}")
             return
 
         async def forward(
@@ -280,9 +295,12 @@ class SOCKS5Server:
                     if not data:
                         break
 
+                    logger.debug(f"[SOCKS5] Forwarding {len(data)} bytes ({direction})")
+
                     if use_accelerator and self._network_client and self._network_client.is_connected:
                         if direction == "out":
-                            await self._network_client.send_data(data, encrypt=False)
+                            success = await self._network_client.send_data(data, encrypt=False)
+                            logger.info(f"[SOCKS5] Sent {len(data)} bytes via network client: {success}")
                         else:
                             pass
                     else:
@@ -292,12 +310,14 @@ class SOCKS5Server:
                     if direction == "out":
                         conn.bytes_out += len(data)
                         self._stats.total_bytes_out += len(data)
+                        logger.info(f"[SOCKS5] Total bytes out: {self._stats.total_bytes_out}")
                     else:
                         conn.bytes_in += len(data)
                         self._stats.total_bytes_in += len(data)
+                        logger.info(f"[SOCKS5] Total bytes in: {self._stats.total_bytes_in}")
 
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"[SOCKS5] Forward error: {e}")
             finally:
                 try:
                     writer.close()
@@ -676,6 +696,15 @@ class TrafficInterceptor:
         ):
             try:
                 if self._network_client and self._network_client.is_connected:
+                    # 首先发送 CONNECT 请求
+                    logger.info(f"[Forward] Connecting to {target_host}:{target_port} via accelerator")
+                    success = await self._network_client.connect_to_target(target_host, target_port)
+                    if not success:
+                        logger.error(f"[Forward] Failed to connect to {target_host}:{target_port}")
+                        return
+                    
+                    logger.info(f"[Forward] Connected to {target_host}:{target_port}, starting data relay")
+                    
                     while True:
                         data = await reader.read(TCP_BUFFER_SIZE)
                         if not data:
@@ -686,6 +715,7 @@ class TrafficInterceptor:
                         if local_port not in self._forward_stats:
                             self._forward_stats[local_port] = {"bytes_in": 0, "bytes_out": 0}
                         self._forward_stats[local_port]["bytes_in"] += len(data)
+                        logger.debug(f"[Forward] Sent {len(data)} bytes to {target_host}:{target_port}")
                 else:
                     target_reader, target_writer = await asyncio.open_connection(
                         target_host, target_port
@@ -721,7 +751,7 @@ class TrafficInterceptor:
                         return_exceptions=True
                     )
             except Exception as e:
-                logger.debug(f"Forward connection error: {e}")
+                logger.error(f"[Forward] Forward connection error: {e}")
             finally:
                 try:
                     writer.close()

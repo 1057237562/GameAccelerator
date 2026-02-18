@@ -276,6 +276,11 @@ class GameAcceleratorClient:
 
     async def _start_traffic_interceptor(self):
         """启动流量拦截器"""
+        logger.info(f"[Traffic] Starting traffic interceptor...")
+        logger.info(f"[Traffic] SOCKS5 port: {self._config.socks5_port}")
+        logger.info(f"[Traffic] UDP port: {self._config.udp_port}")
+        logger.info(f"[Traffic] Upstream: {self._config.server_host}:{self._config.server_port}")
+        
         self._traffic_interceptor = TrafficInterceptor(network_client=self._network_client)
         await self._traffic_interceptor.start(
             socks5_port=self._config.socks5_port,
@@ -283,11 +288,48 @@ class GameAcceleratorClient:
             upstream_host=self._config.server_host,
             upstream_port=self._config.server_port
         )
+        logger.info(f"[Traffic] Traffic interceptor started successfully")
 
     async def _start_traffic_director(self):
         """启动流量定向器"""
+        logger.info(f"[Traffic] Starting traffic director...")
         self._traffic_director = TrafficDirector()
+        self._traffic_director.add_connection_callback(self._on_game_connection_detected)
         await self._traffic_director.start()
+        logger.info(f"[Traffic] Traffic director started successfully")
+
+    async def _on_game_connection_detected(self, pid: int, dest_ip: str, dest_port: int):
+        """游戏连接检测回调"""
+        logger.info(f"[Traffic] Game connection detected: PID {pid} -> {dest_ip}:{dest_port}")
+        
+        # 检查是否需要加速
+        if self._traffic_director and self._traffic_director.should_accelerate(dest_ip, dest_port):
+            logger.info(f"[Traffic] Accelerating connection to {dest_ip}:{dest_port}")
+            
+            # 创建本地端口转发
+            if self._traffic_interceptor:
+                local_port = dest_port + 10000  # 使用目标端口+10000作为本地端口
+                success = await self._traffic_interceptor.start_direct_forward(
+                    local_port=local_port,
+                    target_host=dest_ip,
+                    target_port=dest_port
+                )
+                if success:
+                    logger.info(f"[Traffic] Created port forward: {local_port} -> {dest_ip}:{dest_port}")
+                else:
+                    logger.warning(f"[Traffic] Failed to create port forward for {dest_ip}:{dest_port}")
+
+    async def _check_game_connections(self):
+        """定期检查游戏进程的网络连接"""
+        if not self._traffic_director:
+            return
+        
+        for pid in list(self._traffic_director.process_monitor.detected_games.keys()):
+            try:
+                self._traffic_director.process_monitor.update_game_connections(pid)
+                await self._traffic_director._check_new_connections(pid)
+            except Exception as e:
+                logger.debug(f"Error checking connections for PID {pid}: {e}")
 
     def _on_disconnect(self):
         """断开连接按钮点击"""
@@ -403,7 +445,11 @@ class GameAcceleratorClient:
 
             if self._traffic_interceptor:
                 ports = self._traffic_director.get_acceleration_ports()
+                logger.debug(f"[Traffic] Setting accelerated ports: {ports}")
                 self._traffic_interceptor.set_accelerated_ports(ports)
+            
+            # 定期检查游戏进程的网络连接
+            self._async_bridge.run_coro(self._check_game_connections())
 
     def show_window(self):
         """显示主窗口"""

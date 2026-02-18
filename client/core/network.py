@@ -16,7 +16,7 @@ import json
 from shared.constants import TCP_BUFFER_SIZE, UDP_BUFFER_SIZE, HEARTBEAT_INTERVAL
 from shared.protocol import (
     Packet, PacketHeader, MessageType, ErrorCode, PacketFlags,
-    AuthRequest, AuthResponse, NodeInfo
+    AuthRequest, AuthResponse, NodeInfo, ConnectRequest, ConnectResponse
 )
 from shared.crypto import SecureChannel, CryptoManager, HandshakeCrypto
 
@@ -420,6 +420,67 @@ class NetworkClient:
         except Exception as e:
             logger.error(f"Request node list error: {e}")
             return None
+
+    async def connect_to_target(self, target_host: str, target_port: int) -> bool:
+        """
+        连接到目标服务器
+        通过加速器服务器建立到目标的连接
+        """
+        if not self.is_connected or self._writer is None:
+            logger.error("[Client] Not connected to accelerator server")
+            return False
+
+        try:
+            connect_request = ConnectRequest(
+                target_host=target_host,
+                target_port=target_port
+            )
+            
+            packet = Packet.create(
+                msg_type=MessageType.CONNECT,
+                payload=connect_request.to_bytes(),
+                sequence=self._sequence
+            )
+            self._sequence += 1
+
+            self._writer.write(packet.pack())
+            await self._writer.drain()
+            
+            logger.info(f"[Client] Sent CONNECT request for {target_host}:{target_port}")
+
+            # 等待响应
+            response_data = await asyncio.wait_for(
+                self._reader.read(1024),
+                timeout=self._config.timeout
+            )
+
+            response = Packet.unpack(response_data)
+            if response is None:
+                logger.error("[Client] Invalid CONNECT response")
+                return False
+
+            if response.header.msg_type == MessageType.CONNECT_ACK:
+                connect_response = ConnectResponse.from_bytes(response.payload)
+                if connect_response.success:
+                    logger.info(f"[Client] Connected to {target_host}:{target_port} via accelerator")
+                    return True
+                else:
+                    logger.error(f"[Client] Connect failed: {connect_response.message}")
+                    return False
+            elif response.header.msg_type == MessageType.CONNECT_FAILED:
+                connect_response = ConnectResponse.from_bytes(response.payload)
+                logger.error(f"[Client] Connect failed: {connect_response.message}")
+                return False
+            else:
+                logger.error(f"[Client] Unexpected response type: {response.header.msg_type}")
+                return False
+
+        except asyncio.TimeoutError:
+            logger.error("[Client] Connect timeout")
+            return False
+        except Exception as e:
+            logger.error(f"[Client] Connect to target error: {e}")
+            return False
 
     async def _reconnect(self):
         """重连"""

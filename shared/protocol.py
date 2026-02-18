@@ -24,6 +24,9 @@ class MessageType(IntEnum):
     NODE_LIST_RESPONSE = 0x0C
     SPEED_TEST = 0x0D
     SPEED_TEST_RESULT = 0x0E
+    CONNECT = 0x0F
+    CONNECT_ACK = 0x10
+    CONNECT_FAILED = 0x11
 
 
 class ErrorCode(IntEnum):
@@ -217,3 +220,45 @@ class NodeInfo:
             "current_connections": self.current_connections,
             "is_available": self.is_available,
         }
+
+
+@dataclass
+class ConnectRequest:
+    target_host: str
+    target_port: int
+
+    def to_bytes(self) -> bytes:
+        data = f"{self.target_host}:{self.target_port}"
+        return data.encode("utf-8")
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "ConnectRequest":
+        parts = data.decode("utf-8").rsplit(":", 1)
+        if len(parts) != 2:
+            raise ValueError("Invalid connect request format")
+        return cls(
+            target_host=parts[0],
+            target_port=int(parts[1]),
+        )
+
+
+@dataclass
+class ConnectResponse:
+    success: bool
+    error_code: ErrorCode
+    message: str
+
+    def to_bytes(self) -> bytes:
+        data = f"{int(self.success)}:{int(self.error_code)}:{self.message}"
+        return data.encode("utf-8")
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "ConnectResponse":
+        parts = data.decode("utf-8").split(":", 2)
+        if len(parts) != 3:
+            raise ValueError("Invalid connect response format")
+        return cls(
+            success=bool(int(parts[0])),
+            error_code=ErrorCode(int(parts[1])),
+            message=parts[2],
+        )

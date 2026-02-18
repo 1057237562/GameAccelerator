@@ -365,6 +365,8 @@ class TrafficDirector:
         self._traffic_rules: Dict[int, Dict[str, Any]] = {}
         self._default_ports: Set[int] = set(DEFAULT_GAME_PORTS)
         self._enabled = False
+        self._active_connections: Dict[Tuple[int, str, int], bool] = {}
+        self._connection_callbacks: List[callable] = []
 
     @property
     def process_monitor(self) -> ProcessMonitor:
@@ -373,6 +375,10 @@ class TrafficDirector:
     @property
     def is_enabled(self) -> bool:
         return self._enabled
+
+    def add_connection_callback(self, callback: callable):
+        """添加连接回调"""
+        self._connection_callbacks.append(callback)
 
     async def start(self):
         """启动流量定向"""
@@ -397,11 +403,39 @@ class TrafficDirector:
                 "accelerated": False,
             }
             logger.info(f"Added traffic rule for {game.game_name} (PID: {game.pid})")
+            
+            # 更新游戏进程的网络连接
+            self._process_monitor.update_game_connections(game.pid)
+            await self._check_new_connections(game.pid)
 
         for pid in removed_pids:
             if pid in self._traffic_rules:
                 del self._traffic_rules[pid]
                 logger.info(f"Removed traffic rule for PID: {pid}")
+
+    async def _check_new_connections(self, pid: int):
+        """检查新的网络连接"""
+        if pid not in self._process_monitor.detected_games:
+            return
+        
+        game = self._process_monitor.detected_games[pid]
+        logger.info(f"[Traffic] Checking connections for PID {pid}: {game.connections}")
+        
+        for ip, port in game.connections:
+            conn_key = (pid, ip, port)
+            if conn_key not in self._active_connections:
+                self._active_connections[conn_key] = True
+                logger.info(f"[Traffic] New connection detected: PID {pid} -> {ip}:{port}")
+                
+                # 通知回调
+                for callback in self._connection_callbacks:
+                    try:
+                        if asyncio.iscoroutine_function(callback):
+                            await callback(pid, ip, port)
+                        else:
+                            callback(pid, ip, port)
+                    except Exception as e:
+                        logger.error(f"Connection callback error: {e}")
 
     def should_accelerate(self, dest_ip: str, dest_port: int) -> bool:
         """检查是否需要加速"""

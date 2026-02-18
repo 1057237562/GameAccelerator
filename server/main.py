@@ -20,7 +20,7 @@ from server.core.monitoring import MonitoringService
 from shared.constants import DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT, DEFAULT_API_PORT
 from shared.protocol import (
     Packet, PacketHeader, MessageType, ErrorCode, PacketFlags,
-    AuthRequest, AuthResponse
+    AuthRequest, AuthResponse, ConnectRequest, ConnectResponse
 )
 from shared.crypto import SecureChannel, HandshakeCrypto, CryptoManager
 
@@ -208,6 +208,8 @@ class GameAcceleratorServer(ProxyServer):
                     await self._handle_handshake(conn, packet)
                 elif packet.header.msg_type == MessageType.AUTH_REQUEST:
                     await self._handle_auth(conn, packet)
+                elif packet.header.msg_type == MessageType.CONNECT:
+                    await self._handle_connect(conn, packet)
                 elif packet.header.msg_type == MessageType.DATA:
                     await self._handle_data(conn, packet)
                 elif packet.header.msg_type == MessageType.HEARTBEAT:
@@ -313,6 +315,136 @@ class GameAcceleratorServer(ProxyServer):
         except Exception as e:
             logger.error(f"Auth error: {e}")
 
+    async def _handle_connect(self, conn: ClientConnection, packet: Packet):
+        """处理连接请求"""
+        if conn.state != ConnectionState.CONNECTED:
+            response = ConnectResponse(
+                success=False,
+                error_code=ErrorCode.AUTH_FAILED,
+                message="Not authenticated"
+            )
+            response_packet = Packet.create(
+                msg_type=MessageType.CONNECT_FAILED,
+                payload=response.to_bytes(),
+                sequence=0
+            )
+            conn.tcp_writer.write(response_packet.pack())
+            await conn.tcp_writer.drain()
+            return
+
+        try:
+            connect_request = ConnectRequest.from_bytes(packet.payload)
+            target_host = connect_request.target_host
+            target_port = connect_request.target_port
+            
+            logger.info(f"[Server] Connect request from {conn.remote_addr} to {target_host}:{target_port}")
+
+            target_id = f"{target_host}:{target_port}"
+            if target_id in conn.target_connections:
+                response = ConnectResponse(
+                    success=True,
+                    error_code=ErrorCode.SUCCESS,
+                    message="Already connected"
+                )
+                response_packet = Packet.create(
+                    msg_type=MessageType.CONNECT_ACK,
+                    payload=response.to_bytes(),
+                    sequence=0
+                )
+                conn.tcp_writer.write(response_packet.pack())
+                await conn.tcp_writer.drain()
+                return
+
+            target_reader, target_writer = await asyncio.wait_for(
+                asyncio.open_connection(target_host, target_port),
+                timeout=10
+            )
+            
+            conn.target_connections[target_id] = {
+                "reader": target_reader,
+                "writer": target_writer,
+                "host": target_host,
+                "port": target_port
+            }
+            
+            response = ConnectResponse(
+                success=True,
+                error_code=ErrorCode.SUCCESS,
+                message=f"Connected to {target_host}:{target_port}"
+            )
+            response_packet = Packet.create(
+                msg_type=MessageType.CONNECT_ACK,
+                payload=response.to_bytes(),
+                sequence=0
+            )
+            conn.tcp_writer.write(response_packet.pack())
+            await conn.tcp_writer.drain()
+            
+            logger.info(f"[Server] Connected to {target_host}:{target_port}")
+            
+            async def forward_back():
+                while True:
+                    try:
+                        data = await target_reader.read(8192)
+                        if not data:
+                            break
+                        
+                        response_packet = Packet.create(
+                            msg_type=MessageType.DATA,
+                            payload=data,
+                            sequence=conn.sequence
+                        )
+                        packed_data = response_packet.pack()
+                        conn.tcp_writer.write(packed_data)
+                        await conn.tcp_writer.drain()
+                        
+                        self._monitoring.metrics.update_server_metrics(
+                            bytes_out=len(packed_data),
+                            packets_out=1
+                        )
+                        conn.stats.bytes_sent += len(packed_data)
+                        conn.stats.packets_sent += 1
+                        
+                        logger.debug(f"[Server] Forwarded {len(data)} bytes from {target_host}:{target_port} to client")
+                    except Exception as e:
+                        logger.debug(f"[Server] Forward back error: {e}")
+                        break
+                
+                if target_id in conn.target_connections:
+                    del conn.target_connections[target_id]
+                    logger.info(f"[Server] Connection to {target_host}:{target_port} closed")
+            
+            asyncio.create_task(forward_back())
+
+        except asyncio.TimeoutError:
+            logger.error(f"[Server] Connect timeout to {target_host}:{target_port}")
+            response = ConnectResponse(
+                success=False,
+                error_code=ErrorCode.CONNECTION_REFUSED,
+                message="Connection timeout"
+            )
+            response_packet = Packet.create(
+                msg_type=MessageType.CONNECT_FAILED,
+                payload=response.to_bytes(),
+                sequence=0
+            )
+            conn.tcp_writer.write(response_packet.pack())
+            await conn.tcp_writer.drain()
+        except Exception as e:
+            logger.error(f"[Server] Connect error: {e}")
+            response = ConnectResponse(
+                success=False,
+                error_code=ErrorCode.CONNECTION_REFUSED,
+                message=str(e)
+            )
+            response_packet = Packet.create(
+                msg_type=MessageType.CONNECT_FAILED,
+                payload=response.to_bytes(),
+                sequence=0
+            )
+            conn.tcp_writer.write(response_packet.pack())
+            await conn.tcp_writer.drain()
+
     async def _handle_data(self, conn: ClientConnection, packet: Packet):
         """处理数据"""
         if conn.state != ConnectionState.CONNECTED:
@@ -337,58 +469,23 @@ class GameAcceleratorServer(ProxyServer):
         else:
             payload = packet.payload
 
-        target_host = "127.0.0.1"
-        target_port = 80
-
         # 转发数据到目标服务器
         try:
-            # 检查是否已经有到目标的连接
-            target_id = f"{target_host}:{target_port}"
-            if target_id not in conn.target_connections:
-                # 创建新的目标连接
-                target_reader, target_writer = await asyncio.open_connection(target_host, target_port)
-                conn.target_connections[target_id] = {
-                    "reader": target_reader,
-                    "writer": target_writer
-                }
-                
-                # 启动反向转发任务
-                async def forward_back():  
-                    while True:
-                        try:
-                            data = await target_reader.read(8192)
-                            if not data:
-                                break
-                            
-                            # 发送数据回客户端
-                            response_packet = Packet.create(
-                                msg_type=MessageType.DATA,
-                                payload=data,
-                                sequence=conn.sequence
-                            )
-                            packed_data = response_packet.pack()
-                            conn.tcp_writer.write(packed_data)
-                            await conn.tcp_writer.drain()
-                            
-                            # 更新出站流量统计（包括 Packet 头部）
-                            self._monitoring.metrics.update_server_metrics(
-                                bytes_out=len(packed_data),
-                                packets_out=1
-                            )
-                            conn.stats.bytes_sent += len(packed_data)
-                            conn.stats.packets_sent += 1
-                        except Exception:
-                            break
-                
-                asyncio.create_task(forward_back())
+            if not conn.target_connections:
+                logger.warning(f"[Server] No target connection for {conn.remote_addr}")
+                return
             
-            # 发送数据到目标服务器
+            # 使用第一个目标连接（通常只有一个）
+            target_id = list(conn.target_connections.keys())[0]
             target_conn = conn.target_connections[target_id]
+            
             target_conn["writer"].write(payload)
             await target_conn["writer"].drain()
             
+            logger.debug(f"[Server] Forwarded {len(payload)} bytes to {target_id}")
+            
         except Exception as e:
-            logger.error(f"Data forwarding error: {e}")
+            logger.error(f"[Server] Data forwarding error: {e}")
 
     async def _handle_heartbeat(self, conn: ClientConnection, packet: Packet):
         """处理心跳"""
