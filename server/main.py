@@ -191,30 +191,32 @@ class GameAcceleratorServer(ProxyServer):
     async def _process_tcp_connection(self, conn: ClientConnection):
         """处理TCP连接"""
         try:
-            packet_data = await asyncio.wait_for(
-                conn.tcp_reader.read(8192),
-                timeout=90
-            )
-            if not packet_data:
-                return
+            while True:
+                packet_data = await asyncio.wait_for(
+                    conn.tcp_reader.read(8192),
+                    timeout=90
+                )
+                if not packet_data:
+                    break
 
-            packet = Packet.unpack(packet_data)
-            if packet is None:
-                logger.warning(f"Invalid packet from {conn.remote_addr}")
-                return
+                packet = Packet.unpack(packet_data)
+                if packet is None:
+                    logger.warning(f"Invalid packet from {conn.remote_addr}")
+                    continue
 
-            if packet.header.msg_type == MessageType.HANDSHAKE:
-                await self._handle_handshake(conn, packet)
-            elif packet.header.msg_type == MessageType.AUTH_REQUEST:
-                await self._handle_auth(conn, packet)
-            elif packet.header.msg_type == MessageType.DATA:
-                await self._handle_data(conn, packet)
-            elif packet.header.msg_type == MessageType.HEARTBEAT:
-                await self._handle_heartbeat(conn, packet)
-            elif packet.header.msg_type == MessageType.DISCONNECT:
-                await self._handle_disconnect(conn, packet)
-            elif packet.header.msg_type == MessageType.NODE_LIST_REQUEST:
-                await self._handle_node_list_request(conn, packet)
+                if packet.header.msg_type == MessageType.HANDSHAKE:
+                    await self._handle_handshake(conn, packet)
+                elif packet.header.msg_type == MessageType.AUTH_REQUEST:
+                    await self._handle_auth(conn, packet)
+                elif packet.header.msg_type == MessageType.DATA:
+                    await self._handle_data(conn, packet)
+                elif packet.header.msg_type == MessageType.HEARTBEAT:
+                    await self._handle_heartbeat(conn, packet)
+                elif packet.header.msg_type == MessageType.DISCONNECT:
+                    await self._handle_disconnect(conn, packet)
+                    break
+                elif packet.header.msg_type == MessageType.NODE_LIST_REQUEST:
+                    await self._handle_node_list_request(conn, packet)
 
         except asyncio.TimeoutError:
             logger.debug(f"Connection timeout: {conn.conn_id}")
