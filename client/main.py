@@ -378,6 +378,20 @@ class GameAcceleratorClient:
         stats = self._network_client.stats.to_dict()
         stats["connect_time"] = self._start_time
 
+        # 添加流量拦截器的统计
+        if self._traffic_interceptor:
+            socks5_stats = self._traffic_interceptor.socks5_stats
+            if socks5_stats:
+                stats["socks5_bytes_in"] = socks5_stats.total_bytes_in
+                stats["socks5_bytes_out"] = socks5_stats.total_bytes_out
+                stats["socks5_connections"] = socks5_stats.active_connections
+            
+            forward_stats = self._traffic_interceptor.get_forward_stats()
+            total_forward_in = sum(s.get("bytes_in", 0) for s in forward_stats.values())
+            total_forward_out = sum(s.get("bytes_out", 0) for s in forward_stats.values())
+            stats["forward_bytes_in"] = total_forward_in
+            stats["forward_bytes_out"] = total_forward_out
+
         self._signal_bus.stats_updated.emit(stats)
 
         if self._traffic_director:

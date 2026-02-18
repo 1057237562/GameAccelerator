@@ -457,8 +457,24 @@ class StatsPanel(QWidget):
                 b /= 1024
             return f"{b:.1f} TB"
 
-        self._bytes_in_label.setText(format_bytes(stats.get('bytes_received', 0)))
-        self._bytes_out_label.setText(format_bytes(stats.get('bytes_sent', 0)))
+        # 网络客户端流量
+        network_bytes_in = stats.get('bytes_received', 0)
+        network_bytes_out = stats.get('bytes_sent', 0)
+        
+        # SOCKS5 代理流量
+        socks5_bytes_in = stats.get('socks5_bytes_in', 0)
+        socks5_bytes_out = stats.get('socks5_bytes_out', 0)
+        
+        # 端口转发流量
+        forward_bytes_in = stats.get('forward_bytes_in', 0)
+        forward_bytes_out = stats.get('forward_bytes_out', 0)
+        
+        # 总流量
+        total_bytes_in = network_bytes_in + socks5_bytes_in + forward_bytes_in
+        total_bytes_out = network_bytes_out + socks5_bytes_out + forward_bytes_out
+        
+        self._bytes_in_label.setText(format_bytes(total_bytes_in))
+        self._bytes_out_label.setText(format_bytes(total_bytes_out))
         self._packets_label.setText(str(stats.get('packets_sent', 0)))
 
         latency = stats.get('latency_ms', 0)

@@ -551,6 +551,8 @@ class TrafficInterceptor:
         self._accelerated_ports: Set[int] = set()
         self._running = False
         self._network_client = network_client
+        self._active_forwards: Dict[int, asyncio.Task] = {}
+        self._forward_stats: Dict[int, Dict[str, int]] = {}
 
     @property
     def socks5_stats(self) -> Optional[ProxyStats]:
@@ -654,6 +656,122 @@ class TrafficInterceptor:
             accelerator_port,
             use_accelerator
         )
+
+    async def start_direct_forward(
+        self,
+        local_port: int,
+        target_host: str,
+        target_port: int
+    ) -> bool:
+        """
+        启动直接端口转发（通过加速器）
+        本地端口 -> 加速器服务器 -> 目标服务器
+        """
+        if local_port in self._active_forwards:
+            return False
+
+        async def forward_connection(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter
+        ):
+            try:
+                if self._network_client and self._network_client.is_connected:
+                    while True:
+                        data = await reader.read(TCP_BUFFER_SIZE)
+                        if not data:
+                            break
+
+                        await self._network_client.send_data(data, encrypt=False)
+                        
+                        if local_port not in self._forward_stats:
+                            self._forward_stats[local_port] = {"bytes_in": 0, "bytes_out": 0}
+                        self._forward_stats[local_port]["bytes_in"] += len(data)
+                else:
+                    target_reader, target_writer = await asyncio.open_connection(
+                        target_host, target_port
+                    )
+
+                    async def pipe(src, dst, direction: str):
+                        try:
+                            while True:
+                                data = await src.read(TCP_BUFFER_SIZE)
+                                if not data:
+                                    break
+                                dst.write(data)
+                                await dst.drain()
+                                
+                                if local_port not in self._forward_stats:
+                                    self._forward_stats[local_port] = {"bytes_in": 0, "bytes_out": 0}
+                                if direction == "out":
+                                    self._forward_stats[local_port]["bytes_out"] += len(data)
+                                else:
+                                    self._forward_stats[local_port]["bytes_in"] += len(data)
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                dst.close()
+                                await dst.wait_closed()
+                            except Exception:
+                                pass
+
+                    await asyncio.gather(
+                        pipe(reader, target_writer, "out"),
+                        pipe(target_reader, writer, "in"),
+                        return_exceptions=True
+                    )
+            except Exception as e:
+                logger.debug(f"Forward connection error: {e}")
+            finally:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+        try:
+            server = await asyncio.start_server(
+                forward_connection,
+                "127.0.0.1",
+                local_port
+            )
+            
+            async def run_server():
+                async with server:
+                    await server.serve_forever()
+            
+            self._active_forwards[local_port] = asyncio.create_task(run_server())
+            self._forward_stats[local_port] = {"bytes_in": 0, "bytes_out": 0}
+            
+            logger.info(f"Started direct forward: {local_port} -> {target_host}:{target_port}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start direct forward: {e}")
+            return False
+
+    async def stop_direct_forward(self, local_port: int) -> bool:
+        """停止直接端口转发"""
+        if local_port not in self._active_forwards:
+            return False
+
+        task = self._active_forwards.pop(local_port)
+        task.cancel()
+        
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        
+        if local_port in self._forward_stats:
+            del self._forward_stats[local_port]
+        
+        logger.info(f"Stopped direct forward on port {local_port}")
+        return True
+
+    def get_forward_stats(self) -> Dict[int, Dict[str, int]]:
+        """获取转发统计"""
+        return self._forward_stats.copy()
 
     async def remove_port_forward(self, local_port: int) -> bool:
         """移除端口转发"""

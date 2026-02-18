@@ -222,6 +222,8 @@ class GameAcceleratorServer(ProxyServer):
             logger.debug(f"Connection timeout: {conn.conn_id}")
         except Exception as e:
             logger.error(f"Connection error: {e}")
+        finally:
+            await self._cleanup_connection(conn)
 
     async def _handle_handshake(self, conn: ClientConnection, packet: Packet):
         """处理握手"""
@@ -430,11 +432,11 @@ class GameAcceleratorServer(ProxyServer):
             await self._monitoring.audit.log_logout(
                 conn.user_id, conn.remote_addr[0]
             )
+            conn.user_id = None
 
         if conn.conn_id in self._sessions:
             del self._sessions[conn.conn_id]
 
-        # 清理目标连接
         for target_id, target_conn in conn.target_connections.items():
             try:
                 if "writer" in target_conn and target_conn["writer"]:
@@ -442,6 +444,8 @@ class GameAcceleratorServer(ProxyServer):
                     await target_conn["writer"].wait_closed()
             except Exception as e:
                 logger.debug(f"Error closing target connection: {e}")
+
+        conn.target_connections.clear()
 
         self._monitoring.metrics.update_server_metrics(
             active_connections=self._connection_manager.connection_count - 1
