@@ -20,7 +20,7 @@ async def test_handshake():
     
     # 创建连接配置
     config = ConnectionConfig(
-        server_host="129.226.194.192",
+        server_host="127.0.0.1",
         server_port=8388,
         username="test",
         password="test",

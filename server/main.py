@@ -205,6 +205,7 @@ class GameAcceleratorServer(ProxyServer):
                 )
                 if not packet_data:
                     print(f"Connection closed by client: {conn.remote_addr}")
+                    await self._cleanup_connection(conn)
                     return
 
                 print(f"Received data from {conn.remote_addr}: {packet_data.hex()}, length: {len(packet_data)}")
@@ -251,8 +252,10 @@ class GameAcceleratorServer(ProxyServer):
 
         except asyncio.TimeoutError:
             logger.debug(f"Connection timeout: {conn.conn_id}")
+            await self._cleanup_connection(conn)
         except Exception as e:
             logger.error(f"Connection error: {e}")
+            await self._cleanup_connection(conn)
 
     async def _handle_handshake(self, conn: ClientConnection, packet: Packet):
         """处理握手"""
