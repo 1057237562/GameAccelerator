@@ -318,6 +318,15 @@ class GameAcceleratorServer(ProxyServer):
 
         conn.update_activity()
 
+        # 统计接收的字节数（包括 Packet 头部）
+        packet_size = len(packet.pack())
+        self._monitoring.metrics.update_server_metrics(
+            bytes_in=packet_size,
+            packets_in=1
+        )
+        conn.stats.bytes_received += packet_size
+        conn.stats.packets_received += 1
+
         if packet.header.flags & PacketFlags.ENCRYPTED and conn.secure_channel:
             try:
                 payload = conn.secure_channel.receive(packet.payload)
@@ -329,10 +338,55 @@ class GameAcceleratorServer(ProxyServer):
         target_host = "127.0.0.1"
         target_port = 80
 
-        self._monitoring.metrics.update_server_metrics(
-            bytes_in=len(payload),
-            packets_in=1
-        )
+        # 转发数据到目标服务器
+        try:
+            # 检查是否已经有到目标的连接
+            target_id = f"{target_host}:{target_port}"
+            if target_id not in conn.target_connections:
+                # 创建新的目标连接
+                target_reader, target_writer = await asyncio.open_connection(target_host, target_port)
+                conn.target_connections[target_id] = {
+                    "reader": target_reader,
+                    "writer": target_writer
+                }
+                
+                # 启动反向转发任务
+                async def forward_back():  
+                    while True:
+                        try:
+                            data = await target_reader.read(8192)
+                            if not data:
+                                break
+                            
+                            # 发送数据回客户端
+                            response_packet = Packet.create(
+                                msg_type=MessageType.DATA,
+                                payload=data,
+                                sequence=conn.sequence
+                            )
+                            packed_data = response_packet.pack()
+                            conn.tcp_writer.write(packed_data)
+                            await conn.tcp_writer.drain()
+                            
+                            # 更新出站流量统计（包括 Packet 头部）
+                            self._monitoring.metrics.update_server_metrics(
+                                bytes_out=len(packed_data),
+                                packets_out=1
+                            )
+                            conn.stats.bytes_sent += len(packed_data)
+                            conn.stats.packets_sent += 1
+                        except Exception:
+                            break
+                
+                asyncio.create_task(forward_back())
+            
+            # 发送数据到目标服务器
+            target_conn = conn.target_connections[target_id]
+            target_conn["writer"].write(payload)
+            await target_conn["writer"].drain()
+            
+        except Exception as e:
+            logger.error(f"Data forwarding error: {e}")
 
     async def _handle_heartbeat(self, conn: ClientConnection, packet: Packet):
         """处理心跳"""
@@ -379,6 +433,15 @@ class GameAcceleratorServer(ProxyServer):
 
         if conn.conn_id in self._sessions:
             del self._sessions[conn.conn_id]
+
+        # 清理目标连接
+        for target_id, target_conn in conn.target_connections.items():
+            try:
+                if "writer" in target_conn and target_conn["writer"]:
+                    target_conn["writer"].close()
+                    await target_conn["writer"].wait_closed()
+            except Exception as e:
+                logger.debug(f"Error closing target connection: {e}")
 
         self._monitoring.metrics.update_server_metrics(
             active_connections=self._connection_manager.connection_count - 1

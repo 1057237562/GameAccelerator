@@ -345,7 +345,7 @@ class NetworkClient:
                 except Exception:
                     return
 
-            self._stats.bytes_received += len(payload)
+            self._stats.bytes_received += len(packet.pack())
 
             for callback in self._data_callbacks:
                 try:
@@ -386,10 +386,11 @@ class NetworkClient:
             )
             self._sequence += 1
 
-            self._writer.write(packet.pack())
+            packed_data = packet.pack()
+            self._writer.write(packed_data)
             await self._writer.drain()
 
-            self._stats.bytes_sent += len(data)
+            self._stats.bytes_sent += len(packed_data)
             self._stats.packets_sent += 1
 
             return True

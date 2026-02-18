@@ -276,7 +276,7 @@ class GameAcceleratorClient:
 
     async def _start_traffic_interceptor(self):
         """启动流量拦截器"""
-        self._traffic_interceptor = TrafficInterceptor()
+        self._traffic_interceptor = TrafficInterceptor(network_client=self._network_client)
         await self._traffic_interceptor.start(
             socks5_port=self._config.socks5_port,
             udp_port=self._config.udp_port,

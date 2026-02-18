@@ -77,12 +77,14 @@ class SOCKS5Server:
         host: str = "127.0.0.1",
         port: int = 1080,
         upstream_host: str = "127.0.0.1",
-        upstream_port: int = 8388
+        upstream_port: int = 8388,
+        network_client: Optional[Any] = None
     ):
         self._host = host
         self._port = port
         self._upstream_host = upstream_host
         self._upstream_port = upstream_port
+        self._network_client = network_client
         self._server: Optional[asyncio.Server] = None
         self._connections: Dict[str, ProxyConnection] = {}
         self._stats = ProxyStats()
@@ -251,7 +253,9 @@ class SOCKS5Server:
         use_accelerator = target_port in self._accelerated_ports
 
         try:
-            if use_accelerator:
+            if use_accelerator and self._network_client and self._network_client.is_connected:
+                target_reader, target_writer = None, None
+            elif use_accelerator:
                 target_reader, target_writer = await asyncio.open_connection(
                     self._upstream_host,
                     self._upstream_port
@@ -276,8 +280,14 @@ class SOCKS5Server:
                     if not data:
                         break
 
-                    writer.write(data)
-                    await writer.drain()
+                    if use_accelerator and self._network_client and self._network_client.is_connected:
+                        if direction == "out":
+                            await self._network_client.send_data(data, encrypt=False)
+                        else:
+                            pass
+                    else:
+                        writer.write(data)
+                        await writer.drain()
 
                     if direction == "out":
                         conn.bytes_out += len(data)
@@ -295,11 +305,25 @@ class SOCKS5Server:
                 except Exception:
                     pass
 
-        await asyncio.gather(
-            forward(client_reader, target_writer, "out"),
-            forward(target_reader, client_writer, "in"),
-            return_exceptions=True
-        )
+        if use_accelerator and self._network_client and self._network_client.is_connected:
+            async def forward_from_network():
+                while self._running:
+                    try:
+                        await asyncio.sleep(0.1)
+                    except Exception:
+                        break
+            
+            await asyncio.gather(
+                forward(client_reader, client_writer, "out"),
+                forward_from_network(),
+                return_exceptions=True
+            )
+        else:
+            await asyncio.gather(
+                forward(client_reader, target_writer, "out"),
+                forward(target_reader, client_writer, "in"),
+                return_exceptions=True
+            )
 
     def get_connections(self) -> List[ProxyConnection]:
         """获取所有连接"""
@@ -520,12 +544,13 @@ class UDPProxy:
 class TrafficInterceptor:
     """流量拦截器"""
 
-    def __init__(self):
+    def __init__(self, network_client: Optional[Any] = None):
         self._socks5_proxy: Optional[SOCKS5Server] = None
         self._udp_proxy: Optional[UDPProxy] = None
         self._port_forwarder: Optional[LocalPortForwarder] = None
         self._accelerated_ports: Set[int] = set()
         self._running = False
+        self._network_client = network_client
 
     @property
     def socks5_stats(self) -> Optional[ProxyStats]:
@@ -550,7 +575,8 @@ class TrafficInterceptor:
         self._socks5_proxy = SOCKS5Server(
             port=socks5_port,
             upstream_host=upstream_host,
-            upstream_port=upstream_port
+            upstream_port=upstream_port,
+            network_client=self._network_client
         )
         self._socks5_proxy.set_accelerated_ports(self._accelerated_ports)
         await self._socks5_proxy.start()
