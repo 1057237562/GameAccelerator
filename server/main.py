@@ -7,7 +7,6 @@ import asyncio
 import signal
 import os
 import sys
-import time
 import logging
 from typing import Optional
 from datetime import datetime
@@ -26,11 +25,6 @@ from shared.protocol import (
 from shared.crypto import SecureChannel, HandshakeCrypto, CryptoManager
 
 
-# 设置日志级别为 DEBUG
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 
@@ -94,21 +88,21 @@ class GameAcceleratorServer(ProxyServer):
             {
                 "name": "华东节点-1",
                 "region": "east_china",
-                "host": "0.0.0.0",
+                "host": "127.0.0.1",
                 "port": 8389,
                 "max_connections": 500,
             },
             {
                 "name": "华南节点-1",
                 "region": "south_china",
-                "host": "0.0.0.0",
+                "host": "127.0.0.1",
                 "port": 8390,
                 "max_connections": 500,
             },
             {
                 "name": "华北节点-1",
                 "region": "north_china",
-                "host": "0.0.0.0",
+                "host": "127.0.0.1",
                 "port": 8391,
                 "max_connections": 500,
             },
@@ -197,65 +191,35 @@ class GameAcceleratorServer(ProxyServer):
     async def _process_tcp_connection(self, conn: ClientConnection):
         """处理TCP连接"""
         try:
-            while True:
-                print(f"Waiting for data from {conn.remote_addr}")
-                packet_data = await asyncio.wait_for(
-                    conn.tcp_reader.read(8192),
-                    timeout=90
-                )
-                if not packet_data:
-                    print(f"Connection closed by client: {conn.remote_addr}")
-                    await self._cleanup_connection(conn)
-                    return
+            packet_data = await asyncio.wait_for(
+                conn.tcp_reader.read(8192),
+                timeout=90
+            )
+            if not packet_data:
+                return
 
-                print(f"Received data from {conn.remote_addr}: {packet_data.hex()}, length: {len(packet_data)}")
-                
-                # 手动检查数据包格式
-                if len(packet_data) < 20:
-                    print(f"Data too short: {len(packet_data)} bytes")
-                    return
-                
-                # 尝试手动解析数据包
-                try:
-                    import struct
-                    magic, version, msg_type, flags, payload_len, sequence, timestamp = struct.unpack(
-                        "!HBBIIII", packet_data[:20]
-                    )
-                    print(f"Manual unpack: magic={hex(magic)}, version={version}, msg_type={msg_type}")
-                except Exception as e:
-                    print(f"Manual unpack error: {e}")
-                    return
-                
-                packet = Packet.unpack(packet_data)
-                if packet is None:
-                    print(f"Invalid packet from {conn.remote_addr}")
-                    return
+            packet = Packet.unpack(packet_data)
+            if packet is None:
+                logger.warning(f"Invalid packet from {conn.remote_addr}")
+                return
 
-                print(f"Received packet: msg_type={packet.header.msg_type}, payload_len={packet.header.payload_len}")
-                
-                if packet.header.msg_type == MessageType.HANDSHAKE:
-                    print(f"Handling handshake from {conn.remote_addr}")
-                    await self._handle_handshake(conn, packet)
-                elif packet.header.msg_type == MessageType.AUTH_REQUEST:
-                    await self._handle_auth(conn, packet)
-                elif packet.header.msg_type == MessageType.DATA:
-                    await self._handle_data(conn, packet)
-                elif packet.header.msg_type == MessageType.HEARTBEAT:
-                    await self._handle_heartbeat(conn, packet)
-                elif packet.header.msg_type == MessageType.DISCONNECT:
-                    await self._handle_disconnect(conn, packet)
-                    return
-                elif packet.header.msg_type == MessageType.NODE_LIST_REQUEST:
-                    await self._handle_node_list_request(conn, packet)
-
-                conn.stats.last_activity = time.time()
+            if packet.header.msg_type == MessageType.HANDSHAKE:
+                await self._handle_handshake(conn, packet)
+            elif packet.header.msg_type == MessageType.AUTH_REQUEST:
+                await self._handle_auth(conn, packet)
+            elif packet.header.msg_type == MessageType.DATA:
+                await self._handle_data(conn, packet)
+            elif packet.header.msg_type == MessageType.HEARTBEAT:
+                await self._handle_heartbeat(conn, packet)
+            elif packet.header.msg_type == MessageType.DISCONNECT:
+                await self._handle_disconnect(conn, packet)
+            elif packet.header.msg_type == MessageType.NODE_LIST_REQUEST:
+                await self._handle_node_list_request(conn, packet)
 
         except asyncio.TimeoutError:
             logger.debug(f"Connection timeout: {conn.conn_id}")
-            await self._cleanup_connection(conn)
         except Exception as e:
             logger.error(f"Connection error: {e}")
-            await self._cleanup_connection(conn)
 
     async def _handle_handshake(self, conn: ClientConnection, packet: Packet):
         """处理握手"""
@@ -278,9 +242,7 @@ class GameAcceleratorServer(ProxyServer):
     async def _handle_auth(self, conn: ClientConnection, packet: Packet):
         """处理认证"""
         try:
-            print(f"Handling auth from {conn.remote_addr}")
             auth_request = AuthRequest.from_bytes(packet.payload)
-            print(f"Auth request: username={auth_request.username}, password={auth_request.password}, device_id={auth_request.device_id}")
             
             token = await self._auth_manager.authenticate(
                 auth_request.username,
@@ -288,7 +250,6 @@ class GameAcceleratorServer(ProxyServer):
                 auth_request.device_id,
                 conn.remote_addr[0]
             )
-            print(f"Auth result: token={token}")
 
             if token is None:
                 response = AuthResponse(
@@ -301,7 +262,6 @@ class GameAcceleratorServer(ProxyServer):
                 )
             else:
                 user = await self._auth_manager.get_user(token.user_id)
-                print(f"User: {user}")
                 if user and user.can_connect():
                     conn.user_id = token.user_id
                     conn.state = ConnectionState.CONNECTED
@@ -343,13 +303,10 @@ class GameAcceleratorServer(ProxyServer):
                 payload=response.to_bytes(),
                 sequence=0
             )
-            print(f"Sending auth response: {response_packet.pack().hex()}")
             conn.tcp_writer.write(response_packet.pack())
             await conn.tcp_writer.drain()
-            print(f"Auth response sent")
 
         except Exception as e:
-            print(f"Auth error: {e}")
             logger.error(f"Auth error: {e}")
 
     async def _handle_data(self, conn: ClientConnection, packet: Packet):
@@ -366,6 +323,9 @@ class GameAcceleratorServer(ProxyServer):
                 return
         else:
             payload = packet.payload
+
+        target_host = "127.0.0.1"
+        target_port = 80
 
         self._monitoring.metrics.update_server_metrics(
             bytes_in=len(payload),
