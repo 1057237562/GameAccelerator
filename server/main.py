@@ -278,7 +278,9 @@ class GameAcceleratorServer(ProxyServer):
     async def _handle_auth(self, conn: ClientConnection, packet: Packet):
         """处理认证"""
         try:
+            print(f"Handling auth from {conn.remote_addr}")
             auth_request = AuthRequest.from_bytes(packet.payload)
+            print(f"Auth request: username={auth_request.username}, password={auth_request.password}, device_id={auth_request.device_id}")
             
             token = await self._auth_manager.authenticate(
                 auth_request.username,
@@ -286,6 +288,7 @@ class GameAcceleratorServer(ProxyServer):
                 auth_request.device_id,
                 conn.remote_addr[0]
             )
+            print(f"Auth result: token={token}")
 
             if token is None:
                 response = AuthResponse(
@@ -298,6 +301,7 @@ class GameAcceleratorServer(ProxyServer):
                 )
             else:
                 user = await self._auth_manager.get_user(token.user_id)
+                print(f"User: {user}")
                 if user and user.can_connect():
                     conn.user_id = token.user_id
                     conn.state = ConnectionState.CONNECTED
@@ -339,10 +343,13 @@ class GameAcceleratorServer(ProxyServer):
                 payload=response.to_bytes(),
                 sequence=0
             )
+            print(f"Sending auth response: {response_packet.pack().hex()}")
             conn.tcp_writer.write(response_packet.pack())
             await conn.tcp_writer.drain()
+            print(f"Auth response sent")
 
         except Exception as e:
+            print(f"Auth error: {e}")
             logger.error(f"Auth error: {e}")
 
     async def _handle_data(self, conn: ClientConnection, packet: Packet):
